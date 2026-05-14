@@ -90,8 +90,30 @@ def load_csv_candles(filepath: str, symbol: str = None) -> Optional[pd.DataFrame
     if not os.path.exists(filepath):
         logger.error(f"File non trovato: {filepath}")
         return None
+
     try:
-        df = pd.read_csv(filepath, sep=None, engine="python")
+        # Peek first line to detect format
+        with open(filepath, "r") as f:
+            first_line = f.readline().strip()
+
+        first_field = first_line.split(",")[0].strip()
+        is_headerless = first_field.replace(".", "").isdigit() and len(first_field) == 8
+
+        if is_headerless:
+            # Tickstory headerless: 20210514,00:00:00,O,H,L,C,TV,V,Spread
+            n_cols = len(first_line.split(","))
+            if n_cols == 9:
+                names = ["date_col", "time_col", "open", "high", "low", "close", "tick_volume", "vol2", "spread"]
+            elif n_cols == 7:
+                names = ["date_col", "time_col", "open", "high", "low", "close", "tick_volume"]
+            elif n_cols == 6:
+                names = ["date_col", "open", "high", "low", "close", "tick_volume"]
+            else:
+                names = None
+            df = pd.read_csv(filepath, header=None, names=names) if names else pd.read_csv(filepath, header=None)
+        else:
+            df = pd.read_csv(filepath, sep=None, engine="python")
+
     except Exception as e:
         logger.error(f"Errore lettura CSV {filepath}: {e}")
         return None
@@ -99,7 +121,7 @@ def load_csv_candles(filepath: str, symbol: str = None) -> Optional[pd.DataFrame
     if df.empty:
         return None
 
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
     col_map = {
         "gmt_time": "datetime", "timestamp": "datetime",
         "date_time": "datetime", "time": "time_col", "date": "date_col",
@@ -108,10 +130,16 @@ def load_csv_candles(filepath: str, symbol: str = None) -> Optional[pd.DataFrame
     }
     df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
 
+    # Build datetime index
     if "datetime" in df.columns:
         df.index = pd.to_datetime(df["datetime"], utc=True, format="mixed")
     elif "date_col" in df.columns and "time_col" in df.columns:
-        df.index = pd.to_datetime(df["date_col"].astype(str) + " " + df["time_col"].astype(str), utc=True, format="mixed")
+        date_str = df["date_col"].astype(str)
+        time_str = df["time_col"].astype(str)
+        sample = date_str.iloc[0]
+        if len(sample) == 8 and sample.isdigit():
+            date_str = date_str.str[:4] + "-" + date_str.str[4:6] + "-" + date_str.str[6:8]
+        df.index = pd.to_datetime(date_str + " " + time_str, utc=True, format="mixed")
     elif "date_col" in df.columns:
         df.index = pd.to_datetime(df["date_col"], utc=True, format="mixed")
     else:
@@ -124,7 +152,7 @@ def load_csv_candles(filepath: str, symbol: str = None) -> Optional[pd.DataFrame
     df.index.name = "time"
     for col in ["open", "high", "low", "close"]:
         if col not in df.columns:
-            logger.error(f"Colonna '{col}' mancante in {filepath}")
+            logger.error(f"Colonna '{col}' mancante in {filepath}. Colonne: {list(df.columns)}")
             return None
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
