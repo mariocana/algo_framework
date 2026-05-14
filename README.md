@@ -1,11 +1,11 @@
-# 🤖 Prop Trading Framework
+# 🤖 Algo Trading Framework
 
-Framework modulare per sviluppo, backtest e deployment di strategie di trading per prop firm.
+Framework modulare per sviluppo, backtest e deployment di strategie di trading.
 
 ## Struttura
 
 ```
-prop_framework/
+algo_framework/
 ├── core/                          # Framework core (non toccare)
 │   ├── base_strategy.py           # Classe base — ogni strategia la estende
 │   ├── indicators.py              # Libreria indicatori condivisa
