@@ -125,27 +125,64 @@ class MonteCarloSimulation:
 
         target_pct = prop_rules.get("profit_target_pct")
         target_usd = (initial_balance * target_pct / 100) if target_pct else None
-        max_total = initial_balance * prop_rules["max_total_loss_pct"] / 100
+        max_total_loss = initial_balance * prop_rules["max_total_loss_pct"] / 100
+        max_daily_pct = prop_rules["max_daily_loss_pct"]
 
         max_dds, final_pnls = [], []
         violations = target_hit = 0
+
+        # Approximate trades per day for daily loss simulation
+        trades_per_day = max(1, n_trades // max(len(set(t.get("exit_time", "").strftime("%Y-%m-%d")
+                            if hasattr(t.get("exit_time", ""), "strftime") else str(t.get("exit_time", ""))[:10]
+                            for t in trades)), 1))
 
         for _ in range(self.n):
             shuffled = np.random.permutation(pnls)
             bal = initial_balance
             peak = initial_balance
             max_dd = 0
+            violated = False
+            target_reached = False
+            day_start = initial_balance
 
-            for pnl in shuffled:
+            for i, pnl in enumerate(shuffled):
+                # Simulate daily reset every N trades
+                if i > 0 and i % trades_per_day == 0:
+                    day_start = bal
+
                 bal += pnl
-                if bal > peak: peak = bal
+
+                # Track peak and drawdown
+                if bal > peak:
+                    peak = bal
+
                 dd = peak - bal
-                if dd > max_dd: max_dd = dd
+                if dd > max_dd:
+                    max_dd = dd
+
+                # Check total drawdown violation → stop
+                total_loss = initial_balance - bal
+                if total_loss >= max_total_loss:
+                    violated = True
+                    break
+
+                # Check daily drawdown → stop for the "day"
+                daily_loss = day_start - bal
+                daily_limit = day_start * max_daily_pct / 100
+                if daily_loss >= daily_limit:
+                    violated = True
+                    break
+
+                # Check target reached
+                if target_usd and (bal - initial_balance) >= target_usd and not target_reached:
+                    target_reached = True
 
             max_dds.append((max_dd / peak * 100) if peak > 0 else 0)
             final_pnls.append(bal - initial_balance)
-            if initial_balance - bal >= max_total: violations += 1
-            if target_usd and bal - initial_balance >= target_usd: target_hit += 1
+            if violated:
+                violations += 1
+            if target_reached:
+                target_hit += 1
 
         dd = np.array(max_dds)
         fp = np.array(final_pnls)
@@ -154,12 +191,18 @@ class MonteCarloSimulation:
             "n_simulations": self.n, "n_trades": n_trades,
             "pnl_mean": round(float(np.mean(fp)), 2),
             "pnl_median": round(float(np.median(fp)), 2),
+            "pnl_std": round(float(np.std(fp)), 2),
             "pnl_5th": round(float(np.percentile(fp, 5)), 2),
+            "pnl_25th": round(float(np.percentile(fp, 25)), 2),
+            "pnl_75th": round(float(np.percentile(fp, 75)), 2),
             "pnl_95th": round(float(np.percentile(fp, 95)), 2),
+            "pnl_worst": round(float(np.min(fp)), 2),
+            "pnl_best": round(float(np.max(fp)), 2),
             "dd_mean_pct": round(float(np.mean(dd)), 2),
             "dd_median_pct": round(float(np.median(dd)), 2),
             "dd_95th_pct": round(float(np.percentile(dd, 95)), 2),
             "dd_99th_pct": round(float(np.percentile(dd, 99)), 2),
+            "dd_worst_pct": round(float(np.max(dd)), 2),
             "prop_pass_rate": round((1 - violations / self.n) * 100, 1),
             "target_hit_rate": round(target_hit / self.n * 100, 1),
             "prob_profitable": round(sum(1 for p in fp if p > 0) / self.n * 100, 1),
@@ -193,16 +236,30 @@ def print_walk_forward_report(results):
 
 def print_monte_carlo_report(r):
     print(f"\n{'═' * 80}\n  🎲 MONTE CARLO ({r['n_simulations']} sim × {r['n_trades']} trades)\n{'═' * 80}")
-    print(f"  P&L:  5th=${r['pnl_5th']:+,.2f}  median=${r['pnl_median']:+,.2f}  mean=${r['pnl_mean']:+,.2f}  95th=${r['pnl_95th']:+,.2f}")
-    print(f"  DD:   mean={r['dd_mean_pct']:.1f}%  median={r['dd_median_pct']:.1f}%  95th={r['dd_95th_pct']:.1f}%  99th={r['dd_99th_pct']:.1f}%")
-    print(f"  Prob profitable: {r['prob_profitable']:.1f}%  |  Prop pass: {r['prop_pass_rate']:.1f}%  |  Target hit: {r['target_hit_rate']:.1f}%")
+    print(f"\n  📊 P&L Distribution:")
+    print(f"     Worst:  ${r['pnl_worst']:>+12,.2f}")
+    print(f"     5th:    ${r['pnl_5th']:>+12,.2f}")
+    print(f"     25th:   ${r['pnl_25th']:>+12,.2f}")
+    print(f"     Median: ${r['pnl_median']:>+12,.2f}")
+    print(f"     Mean:   ${r['pnl_mean']:>+12,.2f}  (±${r['pnl_std']:,.2f})")
+    print(f"     75th:   ${r['pnl_75th']:>+12,.2f}")
+    print(f"     95th:   ${r['pnl_95th']:>+12,.2f}")
+    print(f"     Best:   ${r['pnl_best']:>+12,.2f}")
+    print(f"\n  📉 Max Drawdown Distribution:")
+    print(f"     Mean:   {r['dd_mean_pct']:>6.1f}%  |  Median: {r['dd_median_pct']:>6.1f}%")
+    print(f"     95th:   {r['dd_95th_pct']:>6.1f}%  |  99th:   {r['dd_99th_pct']:>6.1f}%")
+    print(f"     Worst:  {r['dd_worst_pct']:>6.1f}%")
+    print(f"\n  🎯 Probabilità:")
+    print(f"     Profittevole:    {r['prob_profitable']:>5.1f}%")
+    print(f"     Passa prop:     {r['prop_pass_rate']:>5.1f}%")
+    print(f"     Raggiunge 10%:  {r['target_hit_rate']:>5.1f}%")
 
     if r["prop_pass_rate"] >= 70 and r["prob_profitable"] >= 80:
-        print(f"  ✅ RISCHIO ACCETTABILE")
+        print(f"\n  ✅ RISCHIO ACCETTABILE")
     elif r["prop_pass_rate"] >= 50:
-        print(f"  ⚠️ RISCHIO MODERATO")
+        print(f"\n  ⚠️ RISCHIO MODERATO")
     else:
-        print(f"  ❌ RISCHIO ELEVATO")
+        print(f"\n  ❌ RISCHIO ELEVATO")
     print(f"{'═' * 80}\n")
 
 
